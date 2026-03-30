@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+mac_fan_system.egg-info/PKG-INFO
+mac_fan_system.egg-info/SOURCES.txt
+mac_fan_system.egg-info/dependency_links.txt
+mac_fan_system.egg-info/entry_points.txt
+mac_fan_system.egg-info/top_level.txt
