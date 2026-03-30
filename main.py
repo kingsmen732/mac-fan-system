@@ -1,87 +1,34 @@
 #!/usr/bin/env python3
 """
-Fan RPM monitor that mirrors mactop's SMC logic as closely as possible.
+Fan RPM monitor backed by a native Objective-C bridge.
 
-This version follows metaspartan/mactop's C SMC layer:
-- exact SMCKeyData_t-style ctypes structs
-- SMC_CMD_READ_KEYINFO = 9
-- SMC_CMD_READ_BYTES = 5
-- float decoding matching SMCGetFloatValue()
+This follows the same broad shape as mactop's native path: keep a persistent
+AppleSMC connection alive, initialize the IOReport side once, and read fan data
+through a native bridge instead of pure Python SMC transactions.
 """
 
 from __future__ import annotations
 
 import argparse
 import ctypes
-import ctypes.util
 import json
 import os
-import struct
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
 
-_iokit = ctypes.cdll.LoadLibrary(ctypes.util.find_library("IOKit"))
-
-io_object_t = ctypes.c_uint
-io_connect_t = ctypes.c_uint
-kern_return_t = ctypes.c_int
-CFMutableDictRef = ctypes.c_void_p
-
-kIOMasterPortDefault = ctypes.c_uint(0)
-kIOReturnSuccess = 0
-
-KERNEL_INDEX_SMC = 2
-SMC_CMD_READ_BYTES = 5
-SMC_CMD_READ_INDEX = 8
-SMC_CMD_READ_KEYINFO = 9
-
-
-class SMCKeyDataVers(ctypes.Structure):
-    _fields_ = [
-        ("major", ctypes.c_char),
-        ("minor", ctypes.c_char),
-        ("build", ctypes.c_char),
-        ("reserved", ctypes.c_char * 1),
-        ("release", ctypes.c_ushort),
-    ]
-
-
-class SMCKeyDataPLimitData(ctypes.Structure):
-    _fields_ = [
-        ("version", ctypes.c_ushort),
-        ("length", ctypes.c_ushort),
-        ("cpuPLimit", ctypes.c_uint),
-        ("gpuPLimit", ctypes.c_uint),
-        ("memPLimit", ctypes.c_uint),
-    ]
-
-
-class SMCKeyDataKeyInfo(ctypes.Structure):
-    _fields_ = [
-        ("dataSize", ctypes.c_uint),
-        ("dataType", ctypes.c_uint),
-        ("dataAttributes", ctypes.c_char),
-    ]
-
-
-SMCBytes = ctypes.c_char * 32
-
-
-class SMCKeyData(ctypes.Structure):
-    _fields_ = [
-        ("key", ctypes.c_uint),
-        ("vers", SMCKeyDataVers),
-        ("pLimitData", SMCKeyDataPLimitData),
-        ("keyInfo", SMCKeyDataKeyInfo),
-        ("result", ctypes.c_char),
-        ("status", ctypes.c_char),
-        ("data8", ctypes.c_char),
-        ("data32", ctypes.c_uint),
-        ("bytes", SMCBytes),
-    ]
+OPEN_RETRIES = 3
+READ_RETRIES = 3
+RETRY_DELAY = 0.03
+ERROR_BUFFER_SIZE = 256
+BUILD_DIR = Path(__file__).resolve().parent / "build"
+NATIVE_LIB_PATH = BUILD_DIR / "libfanbridge.dylib"
+DEFAULT_WIDGET_EXPORT_PATH = (
+    Path.home() / "Library" / "Application Support" / "MacFanSystem" / "fan_rpm.json"
+)
 
 
 @dataclass
@@ -94,209 +41,149 @@ class FanRPM:
     mode: str | None = None
 
 
-DEFAULT_WIDGET_EXPORT_PATH = (
-    Path.home() / "Library" / "Application Support" / "MacFanSystem" / "fan_rpm.json"
-)
-
-
-def key_to_uint(key: str) -> int:
-    key = key[:4].ljust(4, "\0")
-    return (
-        (ord(key[0]) << 24)
-        | (ord(key[1]) << 16)
-        | (ord(key[2]) << 8)
-        | ord(key[3])
-    )
-
-
-def uint_to_fourcc(value: int) -> str:
-    return struct.pack(">I", value).decode("ascii", errors="replace")
-
-
-class AppleSMCError(RuntimeError):
+class NativeFanError(RuntimeError):
     pass
 
 
-class AppleSMC:
-    def __init__(self) -> None:
-        self.conn = io_connect_t(0)
+class NativeFanInfo(ctypes.Structure):
+    _fields_ = [
+        ("name", ctypes.c_char * 32),
+        ("actualRPM", ctypes.c_int),
+        ("minRPM", ctypes.c_int),
+        ("maxRPM", ctypes.c_int),
+        ("targetRPM", ctypes.c_int),
+        ("mode", ctypes.c_int),
+        ("id", ctypes.c_int),
+    ]
 
-    def __enter__(self) -> "AppleSMC":
+
+def ensure_native_bridge() -> Path:
+    if NATIVE_LIB_PATH.exists():
+        return NATIVE_LIB_PATH
+
+    script_path = Path(__file__).resolve().parent / "build_native.sh"
+    completed = subprocess.run(
+        [str(script_path)],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0 or not NATIVE_LIB_PATH.exists():
+        raise NativeFanError(
+            "failed to build native fan bridge: "
+            + (completed.stderr.strip() or completed.stdout.strip() or "unknown error")
+        )
+    return NATIVE_LIB_PATH
+
+
+class NativeFanBridge:
+    def __init__(self) -> None:
+        self.lib = ctypes.CDLL(str(ensure_native_bridge()))
+        self._configure()
+        self._open = False
+
+    def _configure(self) -> None:
+        self.lib.fan_bridge_open.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+        self.lib.fan_bridge_open.restype = ctypes.c_int
+
+        self.lib.fan_bridge_close.argtypes = []
+        self.lib.fan_bridge_close.restype = None
+
+        self.lib.fan_bridge_read.argtypes = [
+            ctypes.POINTER(NativeFanInfo),
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_size_t,
+        ]
+        self.lib.fan_bridge_read.restype = ctypes.c_int
+
+    def __enter__(self) -> "NativeFanBridge":
         self.open()
         return self
 
     def __exit__(self, *_: object) -> None:
         self.close()
 
+    def _error_buffer(self) -> ctypes.Array[ctypes.c_char]:
+        return ctypes.create_string_buffer(ERROR_BUFFER_SIZE)
+
+    def _decode_error(self, buffer: ctypes.Array[ctypes.c_char]) -> str:
+        return buffer.value.decode("utf-8", errors="replace") or "unknown native fan error"
+
     def open(self) -> None:
-        _iokit.IOServiceMatching.restype = CFMutableDictRef
-        _iokit.IOServiceMatching.argtypes = [ctypes.c_char_p]
-        matching = _iokit.IOServiceMatching(b"AppleSMC")
-
-        _iokit.IOServiceGetMatchingService.restype = io_object_t
-        _iokit.IOServiceGetMatchingService.argtypes = [ctypes.c_uint, CFMutableDictRef]
-        service = _iokit.IOServiceGetMatchingService(kIOMasterPortDefault, matching)
-        if not service:
-            raise AppleSMCError("AppleSMC service not found")
-
-        _iokit.IOServiceOpen.restype = kern_return_t
-        _iokit.IOServiceOpen.argtypes = [
-            io_object_t,
-            ctypes.c_uint,
-            ctypes.c_uint,
-            ctypes.POINTER(io_connect_t),
-        ]
-        _iokit.mach_task_self.restype = ctypes.c_uint
-
-        result = _iokit.IOServiceOpen(
-            service,
-            _iokit.mach_task_self(),
-            1,
-            ctypes.byref(self.conn),
-        )
-        _iokit.IOObjectRelease(service)
-
-        if result != kIOReturnSuccess:
-            raise AppleSMCError(f"IOServiceOpen failed: 0x{result & 0xFFFFFFFF:08x}")
+        if self._open:
+            return
+        error_buffer = self._error_buffer()
+        result = self.lib.fan_bridge_open(error_buffer, ERROR_BUFFER_SIZE)
+        if result != 0:
+            raise NativeFanError(self._decode_error(error_buffer))
+        self._open = True
 
     def close(self) -> None:
-        if self.conn.value:
-            _iokit.IOServiceClose(self.conn)
-            self.conn.value = 0
+        if self._open:
+            self.lib.fan_bridge_close()
+            self._open = False
 
-    def call(self, input_struct: SMCKeyData) -> tuple[int, SMCKeyData]:
-        output_struct = SMCKeyData()
-        input_size = ctypes.c_size_t(ctypes.sizeof(SMCKeyData))
-        output_size = ctypes.c_size_t(ctypes.sizeof(SMCKeyData))
+    def read(self, max_fans: int = 8) -> tuple[list[FanRPM], str | None]:
+        fans_buffer = (NativeFanInfo * max_fans)()
+        error_buffer = self._error_buffer()
+        count = self.lib.fan_bridge_read(fans_buffer, max_fans, error_buffer, ERROR_BUFFER_SIZE)
+        if count < 0:
+            return [], self._decode_error(error_buffer)
+        if count == 0:
+            return [], "no fan rpm keys returned data"
 
-        _iokit.IOConnectCallStructMethod.restype = kern_return_t
-        _iokit.IOConnectCallStructMethod.argtypes = [
-            io_connect_t,
-            ctypes.c_uint,
-            ctypes.c_void_p,
-            ctypes.c_size_t,
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_size_t),
-        ]
+        fans: list[FanRPM] = []
+        for item in fans_buffer[:count]:
+            mode = None
+            if item.mode == 0:
+                mode = "auto"
+            elif item.mode == 1:
+                mode = "manual"
+            elif item.mode == 3:
+                mode = "system"
+            elif item.mode != 0:
+                mode = str(item.mode)
 
-        result = _iokit.IOConnectCallStructMethod(
-            self.conn,
-            KERNEL_INDEX_SMC,
-            ctypes.byref(input_struct),
-            input_size,
-            ctypes.byref(output_struct),
-            ctypes.byref(output_size),
-        )
-        return result, output_struct
-
-    def get_key_info(self, key: str) -> SMCKeyDataKeyInfo | None:
-        input_struct = SMCKeyData()
-        input_struct.key = key_to_uint(key)
-        input_struct.data8 = bytes([SMC_CMD_READ_KEYINFO])
-        result, output_struct = self.call(input_struct)
-        if result != kIOReturnSuccess:
-            return None
-        if ord(output_struct.result or b"\0") != 0:
-            return None
-        return output_struct.keyInfo
-
-    def read_key(self, key: str) -> tuple[str | None, bytes | None]:
-        key_info = self.get_key_info(key)
-        if key_info is None or key_info.dataSize == 0:
-            return None, None
-
-        input_struct = SMCKeyData()
-        input_struct.key = key_to_uint(key)
-        input_struct.keyInfo.dataSize = key_info.dataSize
-        input_struct.data8 = bytes([SMC_CMD_READ_BYTES])
-        result, output_struct = self.call(input_struct)
-        if result != kIOReturnSuccess:
-            return None, None
-        if ord(output_struct.result or b"\0") != 0:
-            return None, None
-
-        data_type = uint_to_fourcc(key_info.dataType).rstrip("\x00 ")
-        raw = bytes(output_struct.bytes[: key_info.dataSize])
-        return data_type, raw
+            fans.append(
+                FanRPM(
+                    index=int(item.id),
+                    rpm=int(item.actualRPM),
+                    target_rpm=int(item.targetRPM) if item.targetRPM > 0 else None,
+                    min_rpm=int(item.minRPM) if item.minRPM > 0 else None,
+                    max_rpm=int(item.maxRPM) if item.maxRPM > 0 else None,
+                    mode=mode,
+                )
+            )
+        return fans, None
 
 
-def decode_uint8(raw: bytes | None) -> int | None:
-    if not raw:
-        return None
-    return raw[0]
-
-
-def decode_float(data_type: str | None, raw: bytes | None) -> float | None:
-    if not data_type or not raw:
-        return None
-    try:
-        if data_type == "flt" and len(raw) >= 4:
-            return struct.unpack("f", raw[:4])[0]
-        if data_type == "fpe2" and len(raw) >= 2:
-            return struct.unpack(">H", raw[:2])[0] / 4.0
-    except Exception:
-        return None
-    return None
-
-
-def decode_mode(raw: bytes | None) -> str | None:
-    value = decode_uint8(raw)
-    if value is None:
-        return None
-    if value == 0:
-        return "auto"
-    if value == 1:
-        return "manual"
-    if value == 3:
-        return "system"
-    return str(value)
+def read_fans_from_connection(bridge: NativeFanBridge) -> tuple[list[FanRPM], str | None]:
+    last_error: str | None = None
+    for attempt in range(READ_RETRIES):
+        fans, error = bridge.read()
+        if fans:
+            return fans, None
+        last_error = error
+        if attempt < READ_RETRIES - 1:
+            time.sleep(RETRY_DELAY)
+    return [], last_error
 
 
 def read_fans() -> tuple[list[FanRPM], str | None]:
-    try:
-        with AppleSMC() as smc:
-            _, raw_count = smc.read_key("FNum")
-            fan_count = decode_uint8(raw_count)
-            if not fan_count:
-                fan_count = 2
+    last_error: str | None = None
+    for attempt in range(OPEN_RETRIES):
+        try:
+            with NativeFanBridge() as bridge:
+                fans, error = read_fans_from_connection(bridge)
+                if fans:
+                    return fans, None
+                last_error = error
+        except NativeFanError as exc:
+            last_error = str(exc)
 
-            fans: list[FanRPM] = []
-            for index in range(fan_count):
-                actual_type, actual_raw = smc.read_key(f"F{index}Ac")
-                actual = decode_float(actual_type, actual_raw)
-                if actual is None:
-                    continue
-
-                target_type, target_raw = smc.read_key(f"F{index}Tg")
-                min_type, min_raw = smc.read_key(f"F{index}Mn")
-                max_type, max_raw = smc.read_key(f"F{index}Mx")
-                _, mode_raw = smc.read_key(f"F{index}Md")
-
-                fans.append(
-                    FanRPM(
-                        index=index,
-                        rpm=int(round(actual)),
-                        target_rpm=(
-                            int(round(decode_float(target_type, target_raw)))
-                            if decode_float(target_type, target_raw) is not None
-                            else None
-                        ),
-                        min_rpm=(
-                            int(round(decode_float(min_type, min_raw)))
-                            if decode_float(min_type, min_raw) is not None
-                            else None
-                        ),
-                        max_rpm=(
-                            int(round(decode_float(max_type, max_raw)))
-                            if decode_float(max_type, max_raw) is not None
-                            else None
-                        ),
-                        mode=decode_mode(mode_raw),
-                    )
-                )
-            return fans, None
-    except AppleSMCError as exc:
-        return [], str(exc)
+        if attempt < OPEN_RETRIES - 1:
+            time.sleep(RETRY_DELAY)
+    return [], last_error
 
 
 def print_text(fans: list[FanRPM], error: str | None) -> None:
@@ -332,18 +219,15 @@ def build_payload(fans: list[FanRPM], error: str | None) -> dict[str, object]:
     }
 
 
-def export_widget_payload(
-    fans: list[FanRPM],
-    error: str | None,
-    export_path: Path,
-) -> None:
+def export_widget_payload(fans: list[FanRPM], error: str | None, export_path: Path) -> None:
     export_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = build_payload(fans, error)
-    export_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    export_path.write_text(json.dumps(build_payload(fans, error), indent=2), encoding="utf-8")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Display fan RPM using mactop-style SMC calls.")
+    parser = argparse.ArgumentParser(
+        description="Display fan RPM using a native AppleSMC and IOReport bridge."
+    )
     parser.add_argument("--watch", type=float, metavar="SECS", help="Refresh every N seconds.")
     parser.add_argument("--json", action="store_true", help="Emit JSON.")
     parser.add_argument(
@@ -359,10 +243,44 @@ def main() -> int:
     args = parser.parse_args()
 
     export_path = Path(args.widget_export_path).expanduser()
+    last_good_fans: list[FanRPM] = []
+    persistent_bridge: NativeFanBridge | None = None
 
     try:
+        if args.watch:
+            for attempt in range(OPEN_RETRIES):
+                try:
+                    persistent_bridge = NativeFanBridge()
+                    persistent_bridge.open()
+                    break
+                except NativeFanError:
+                    persistent_bridge = None
+                    if attempt < OPEN_RETRIES - 1:
+                        time.sleep(RETRY_DELAY)
+
         while True:
-            fans, error = read_fans()
+            if persistent_bridge is not None:
+                fans, error = read_fans_from_connection(persistent_bridge)
+            else:
+                fans, error = read_fans()
+
+            if fans:
+                last_good_fans = fans
+            elif last_good_fans:
+                fans = last_good_fans
+                error = None
+
+            if args.watch and persistent_bridge is None:
+                for attempt in range(OPEN_RETRIES):
+                    try:
+                        persistent_bridge = NativeFanBridge()
+                        persistent_bridge.open()
+                        break
+                    except NativeFanError:
+                        persistent_bridge = None
+                        if attempt < OPEN_RETRIES - 1:
+                            time.sleep(RETRY_DELAY)
+
             if args.widget_export:
                 export_widget_payload(fans, error, export_path)
             if args.json:
@@ -377,6 +295,9 @@ def main() -> int:
             time.sleep(args.watch)
     except KeyboardInterrupt:
         return 0
+    finally:
+        if persistent_bridge is not None:
+            persistent_bridge.close()
 
     return 0
 
