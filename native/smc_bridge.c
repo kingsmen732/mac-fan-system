@@ -184,8 +184,27 @@ kern_return_t SMCWriteKey(io_connect_t conn, const char *key, unsigned int dataT
 }
 
 kern_return_t SMCSetFloat(io_connect_t conn, const char *key, float value) {
+  SMCKeyData_keyInfo_t keyInfo;
+  kern_return_t result = SMCGetKeyInfo(conn, key, &keyInfo);
+  if (result != kIOReturnSuccess) {
+    return result;
+  }
+
   SMCBytes_t bytes;
   memset(bytes, 0, sizeof(bytes));
   memcpy(bytes, &value, sizeof(float));
-  return SMCWriteKey(conn, key, key_to_uint("flt "), bytes, 4);
+  return SMCWriteKey(conn, key, keyInfo.dataType, bytes, keyInfo.dataSize);
+}
+
+kern_return_t SMCSetUI8(io_connect_t conn, const char *key, uint8_t value) {
+  SMCKeyData_keyInfo_t keyInfo;
+  kern_return_t result = SMCGetKeyInfo(conn, key, &keyInfo);
+  if (result != kIOReturnSuccess) {
+    return result;
+  }
+
+  SMCBytes_t bytes;
+  memset(bytes, 0, sizeof(bytes));
+  bytes[0] = (char)value;
+  return SMCWriteKey(conn, key, keyInfo.dataType, bytes, keyInfo.dataSize);
 }

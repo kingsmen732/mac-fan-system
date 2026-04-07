@@ -55,5 +55,6 @@ kern_return_t SMCGetKeyFromIndex(io_connect_t conn, int index, char *outputKey);
 kern_return_t SMCGetKeyInfo(io_connect_t conn, const char *key, SMCKeyData_keyInfo_t *keyInfo);
 kern_return_t SMCWriteKey(io_connect_t conn, const char *key, unsigned int dataType, SMCBytes_t bytes, unsigned int dataSize);
 kern_return_t SMCSetFloat(io_connect_t conn, const char *key, float value);
+kern_return_t SMCSetUI8(io_connect_t conn, const char *key, uint8_t value);
 
 #endif

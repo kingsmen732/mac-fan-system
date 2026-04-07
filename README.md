@@ -8,6 +8,7 @@ Native fan RPM monitoring for current Apple Silicon MacBook Pros, with a Python 
 - Uses the same fan key family `mactop` uses: `FNum`, `F%dAc`, `F%dMn`, `F%dMx`, `F%dTg`, `F%dMd`
 - Does not depend on `mactop`
 - Prints only fan data
+- Can report and change Apple-supported cooling mode when macOS exposes it
 - Can export widget JSON for the macOS widget scaffold in [`widget/`](./widget)
 
 The Python layer is just the UI and JSON/export wrapper. The actual fan reads happen in:
@@ -47,6 +48,36 @@ Watch live fan RPM:
 python3 main.py --watch 1
 ```
 
+Show Apple-supported cooling mode status:
+
+```bash
+python3 main.py --cooling-status
+```
+
+Enable the safest supported "more cooling" mode:
+
+```bash
+sudo python3 main.py --set-supported-cooling high
+```
+
+Return to normal automatic behavior:
+
+```bash
+sudo python3 main.py --set-supported-cooling normal
+```
+
+Experimental direct fan max mode:
+
+```bash
+sudo python3 main.py --unsafe-force-fans-high --i-understand-this-is-unsupported
+```
+
+Restore automatic fan control:
+
+```bash
+sudo python3 main.py --unsafe-restore-auto --i-understand-this-is-unsupported
+```
+
 Export widget JSON while watching:
 
 ```bash
@@ -82,4 +113,6 @@ python3 main.py --watch 2 --widget-export
 
 - `main.py` keeps the native bridge open during `--watch` mode so reads stay stable.
 - The bridge tries the broader `IOReport` setup as a best-effort warm-up, but live fan RPM comes from direct SMC keys.
+- Directly forcing fan RPM to max is not exposed by Apple as a supported macOS interface. The safe path in this project is `High Power Mode` when the Mac advertises `highpowermode` support through `pmset`.
+- The `--unsafe-force-fans-high` and `--unsafe-restore-auto` commands use undocumented AppleSMC writes. They are intentionally opt-in, require `sudo`, and should be treated as experimental.
 - If you test from a restricted environment, `AppleSMC` access may fail even though the same code works fine in your normal Terminal session.

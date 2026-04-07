@@ -216,3 +216,67 @@ int fan_bridge_read(fan_info_t *fans, int maxFans, char *error_buffer, size_t er
   }
   return count;
 }
+
+int fan_bridge_force_high(char *error_buffer, size_t error_buffer_len) {
+  if (!g_smcConn) {
+    snprintf(error_buffer, error_buffer_len, "bridge not open");
+    return -1;
+  }
+
+  SMCKeyData_t val;
+  if (SMCReadKey(g_smcConn, "FNum", &val) != kIOReturnSuccess) {
+    snprintf(error_buffer, error_buffer_len, "failed to read FNum");
+    return -1;
+  }
+
+  int fanCount = (unsigned char)val.bytes[0];
+  for (int i = 0; i < fanCount; i++) {
+    char key[5];
+
+    snprintf(key, sizeof(key), "F%dMd", i);
+    if (SMCSetUI8(g_smcConn, key, 1) != kIOReturnSuccess) {
+      snprintf(error_buffer, error_buffer_len, "failed to set fan %d mode to manual", i);
+      return -1;
+    }
+
+    snprintf(key, sizeof(key), "F%dMx", i);
+    float maxRPM = (float)SMCGetFloatValue(g_smcConn, key);
+    if (maxRPM <= 0.0f) {
+      snprintf(error_buffer, error_buffer_len, "failed to read max RPM for fan %d", i);
+      return -1;
+    }
+
+    snprintf(key, sizeof(key), "F%dTg", i);
+    if (SMCSetFloat(g_smcConn, key, maxRPM) != kIOReturnSuccess) {
+      snprintf(error_buffer, error_buffer_len, "failed to set target RPM for fan %d", i);
+      return -1;
+    }
+  }
+
+  return fanCount;
+}
+
+int fan_bridge_restore_auto(char *error_buffer, size_t error_buffer_len) {
+  if (!g_smcConn) {
+    snprintf(error_buffer, error_buffer_len, "bridge not open");
+    return -1;
+  }
+
+  SMCKeyData_t val;
+  if (SMCReadKey(g_smcConn, "FNum", &val) != kIOReturnSuccess) {
+    snprintf(error_buffer, error_buffer_len, "failed to read FNum");
+    return -1;
+  }
+
+  int fanCount = (unsigned char)val.bytes[0];
+  for (int i = 0; i < fanCount; i++) {
+    char key[5];
+    snprintf(key, sizeof(key), "F%dMd", i);
+    if (SMCSetUI8(g_smcConn, key, 0) != kIOReturnSuccess) {
+      snprintf(error_buffer, error_buffer_len, "failed to restore auto mode for fan %d", i);
+      return -1;
+    }
+  }
+
+  return fanCount;
+}
