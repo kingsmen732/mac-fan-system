@@ -1,28 +1,28 @@
 import Foundation
+import WidgetKit
 
-enum WidgetDataSource {
-    static let defaultJSONPath =
-        NSString(string: "~/Library/Application Support/MacFanSystem/fan_rpm.json")
-            .expandingTildeInPath
+struct FanRPMEntry: TimelineEntry {
+    let date: Date
+    let payload: FanWidgetEntryData
+}
 
-    static func load() -> FanWidgetEntryData {
-        let url = URL(fileURLWithPath: defaultJSONPath)
-        guard
-            let data = try? Data(contentsOf: url),
-            let payload = try? JSONDecoder().decode(WidgetPayload.self, from: data)
-        else {
-            return FanWidgetEntryData(
-                timestamp: .now,
-                fans: [],
-                error: "No exported fan data"
-            )
-        }
-
-        let parsedDate = ISO8601DateFormatter().date(from: payload.timestamp) ?? .now
-        return FanWidgetEntryData(
-            timestamp: parsedDate,
-            fans: payload.fans,
-            error: payload.error
+struct FanRPMProvider: TimelineProvider {
+    func placeholder(in context: Context) -> FanRPMEntry {
+        FanRPMEntry(
+            date: .now,
+            payload: FanDataStore.load()
         )
+    }
+
+    func getSnapshot(in context: Context, completion: @escaping (FanRPMEntry) -> Void) {
+        let payload = FanDataStore.load()
+        completion(FanRPMEntry(date: payload.timestamp, payload: payload))
+    }
+
+    func getTimeline(in context: Context, completion: @escaping (Timeline<FanRPMEntry>) -> Void) {
+        let payload = FanDataStore.load()
+        let entry = FanRPMEntry(date: payload.timestamp, payload: payload)
+        let nextUpdate = Calendar.current.date(byAdding: .second, value: 15, to: .now) ?? .now
+        completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
     }
 }

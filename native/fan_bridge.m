@@ -1,3 +1,4 @@
+#include "fan_bridge.h"
 #include "smc_bridge.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <Foundation/Foundation.h>
@@ -19,16 +20,6 @@ extern CFDictionaryRef IOReportCreateSamplesDelta(CFDictionaryRef a, CFDictionar
                                                   CFTypeRef unused);
 extern int64_t IOReportSimpleGetIntegerValue(CFDictionaryRef item, int32_t idx);
 extern CFStringRef IOReportChannelGetGroup(CFDictionaryRef item);
-
-typedef struct {
-  char name[32];
-  int actualRPM;
-  int minRPM;
-  int maxRPM;
-  int targetRPM;
-  int mode;
-  int id;
-} fan_info_t;
 
 static IOReportSubscriptionRef g_subscription = NULL;
 static CFMutableDictionaryRef g_channels = NULL;

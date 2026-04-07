@@ -1,0 +1,63 @@
+name: build-mac-widget
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - ".github/workflows/build-mac-widget.yml"
+      - "project.yml"
+      - "MacFanWidgetApp/**"
+      - "MacFanWidgetShared/**"
+      - "widget/**"
+      - "widget-sample.json"
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build release app
+        run: |
+          xcodebuild \
+            -project MacFanWidgetApp.xcodeproj \
+            -scheme MacFanWidgetApp \
+            -configuration Release \
+            -destination "platform=macOS,arch=arm64" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            clean build
+
+      - name: Package app bundle
+        run: |
+          mkdir -p build/artifacts
+          APP_PATH="$(find build/DerivedData/Build/Products/Release -maxdepth 1 -name '*.app' | head -n 1)"
+          test -n "$APP_PATH"
+          codesign --force --deep --sign - "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" build/artifacts/Mac-Fan-Widget-macOS.zip
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-fan-widget-macos
+          path: build/artifacts/Mac-Fan-Widget-macOS.zip
+
+      - name: Publish GitHub release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/artifacts/Mac-Fan-Widget-macOS.zip
+          generate_release_notes: true

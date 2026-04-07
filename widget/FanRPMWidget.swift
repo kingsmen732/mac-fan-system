@@ -1,87 +1,186 @@
 import SwiftUI
 import WidgetKit
 
-struct FanRPMEntry: TimelineEntry {
-    let date: Date
-    let fans: [WidgetFan]
-    let error: String?
-}
-
-struct FanRPMProvider: TimelineProvider {
-    func placeholder(in context: Context) -> FanRPMEntry {
-        FanRPMEntry(
-            date: .now,
-            fans: [
-                WidgetFan(index: 0, rpm: 2300, target_rpm: nil, min_rpm: nil, max_rpm: nil, mode: nil),
-                WidgetFan(index: 1, rpm: 2500, target_rpm: nil, min_rpm: nil, max_rpm: nil, mode: nil),
-            ],
-            error: nil
-        )
-    }
-
-    func getSnapshot(in context: Context, completion: @escaping (FanRPMEntry) -> Void) {
-        let payload = WidgetDataSource.load()
-        completion(FanRPMEntry(date: payload.timestamp, fans: payload.fans, error: payload.error))
-    }
-
-    func getTimeline(in context: Context, completion: @escaping (Timeline<FanRPMEntry>) -> Void) {
-        let payload = WidgetDataSource.load()
-        let entry = FanRPMEntry(date: payload.timestamp, fans: payload.fans, error: payload.error)
-        let nextUpdate = Calendar.current.date(byAdding: .second, value: 15, to: .now) ?? .now
-        completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
-    }
-}
-
 struct FanRPMWidgetView: View {
-    var entry: FanRPMProvider.Entry
+    @Environment(\.widgetFamily) private var family
+
+    let entry: FanRPMEntry
 
     var body: some View {
         ZStack {
+            background
+
+            switch family {
+            case .systemSmall:
+                smallWidget
+            default:
+                mediumWidget
+            }
+        }
+        .containerBackground(for: .widget) {
+            background
+        }
+    }
+
+    private var background: some View {
+        ZStack {
             LinearGradient(
-                colors: [Color(red: 0.11, green: 0.13, blue: 0.18), Color(red: 0.17, green: 0.20, blue: 0.26)],
+                colors: [
+                    Color(red: 0.06, green: 0.07, blue: 0.09),
+                    Color(red: 0.09, green: 0.11, blue: 0.14),
+                    accentColor.opacity(0.42),
+                ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Fan RPM")
-                    .font(.headline)
-                    .foregroundStyle(.white.opacity(0.9))
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(.white.opacity(0.05))
+                .padding(6)
+        }
+    }
 
-                if let error = entry.error {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.75))
-                        .lineLimit(3)
-                } else if entry.fans.isEmpty {
-                    Text("No fan data")
-                        .font(.body)
-                        .foregroundStyle(.white.opacity(0.8))
-                } else {
-                    ForEach(entry.fans.prefix(2)) { fan in
-                        HStack {
+    private var accentColor: Color {
+        entry.payload.controlMode == .boost ? .orange : .mint
+    }
+
+    private var appliedModeTitle: String {
+        (entry.payload.appliedMode ?? entry.payload.controlMode).title
+    }
+
+    private var smallWidget: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+
+            if let topFan = entry.payload.topFan {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("\(topFan.rpm)")
+                        .font(.system(size: 34, weight: .black, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("RPM")
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.56))
+
+                    Gauge(value: topFan.normalizedRPM) {
+                        EmptyView()
+                    }
+                    .gaugeStyle(.accessoryLinearCapacity)
+                    .tint(Gradient(colors: [accentColor, .white]))
+                }
+            } else {
+                fallback
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+    }
+
+    private var mediumWidget: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+
+            HStack(spacing: 10) {
+                statCard(
+                    title: "AVERAGE",
+                    value: entry.payload.fans.isEmpty ? "--" : "\(entry.payload.averageRPM)",
+                    detail: "RPM"
+                )
+
+                statCard(
+                    title: "MODE",
+                    value: appliedModeTitle,
+                    detail: entry.payload.controlMode.subtitle
+                )
+            }
+
+            if entry.payload.fans.isEmpty {
+                fallback
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(entry.payload.fans.prefix(2)) { fan in
+                        HStack(spacing: 10) {
+                            Image(systemName: "fanblades.fill")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(accentColor)
+
                             Text("Fan \(fan.index)")
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.white.opacity(0.85))
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.82))
+
                             Spacer()
-                            Text("\(fan.rpm)")
-                                .font(.title3.weight(.bold))
-                                .foregroundStyle(.green)
-                            Text("RPM")
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.7))
+
+                            Text("\(fan.rpm) RPM")
+                                .font(.system(size: 14, weight: .black, design: .rounded))
+                                .foregroundStyle(.white)
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(.white.opacity(0.08))
+                        )
                     }
                 }
-
-                Spacer(minLength: 0)
-
-                Text(entry.date, style: .time)
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.55))
             }
-            .padding()
+
+            Spacer(minLength: 0)
         }
+        .padding(16)
+    }
+
+    private var header: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Mac Fan")
+                    .font(.system(size: 14, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+
+                Text(appliedModeTitle)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.58))
+            }
+
+            Spacer(minLength: 10)
+
+            Text(entry.date, style: .time)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.48))
+        }
+    }
+
+    private var fallback: some View {
+        Text(entry.payload.subtitle)
+            .font(.system(size: 12, weight: .medium, design: .rounded))
+            .foregroundStyle(.white.opacity(0.74))
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(.white.opacity(0.08))
+            )
+    }
+
+    private func statCard(title: String, value: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.45))
+
+            Text(value)
+                .font(.system(size: 20, weight: .black, design: .rounded))
+                .foregroundStyle(.white)
+
+            Text(detail)
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.54))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.white.opacity(0.08))
+        )
     }
 }
 
@@ -92,8 +191,8 @@ struct FanRPMWidget: Widget {
         StaticConfiguration(kind: kind, provider: FanRPMProvider()) { entry in
             FanRPMWidgetView(entry: entry)
         }
-        .configurationDisplayName("Fan RPM")
-        .description("Shows live Mac fan RPM values exported by the Python script.")
+        .configurationDisplayName("Mac Fan Widget")
+        .description("A minimal desktop widget for Apple Silicon fan speed and cooling mode.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }

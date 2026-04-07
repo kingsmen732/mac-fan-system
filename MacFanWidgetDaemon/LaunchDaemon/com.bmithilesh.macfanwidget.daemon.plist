@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.bmithilesh.macfanwidget.daemon</string>
+	<key>BundleProgram</key>
+	<string>Contents/Library/LaunchServices/MacFanWidgetDaemon</string>
+	<key>KeepAlive</key>
+	<true/>
+	<key>MachServices</key>
+	<dict>
+		<key>com.bmithilesh.macfanwidget.daemon</key>
+		<true/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>RunAtLoad</key>
+	<true/>
+</dict>
+</plist>
