@@ -14,7 +14,7 @@ authors = [
 dependencies = []
 
 [project.scripts]
-mac-fan-system = "mac_fan_system.cli:main"
+mac-fan-system = "main:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
+[tool.setuptools]
+py-modules = ["main"]

@@ -1,2 +1,0 @@
-[console_scripts]
-mac-fan-system = mac_fan_system.cli:main

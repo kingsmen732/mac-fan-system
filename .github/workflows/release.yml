@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run unit tests
+        env:
+          PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.pycache
+        run: python -m unittest discover -s tests -q
+
+      - name: Build native bridge
+        run: zsh build_native.sh
+
+      - name: Build release assets
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="mac-fan-system-${VERSION#v}/" -o "dist/mac-fan-system-${VERSION}.tar.gz" HEAD
+          shasum -a 256 "dist/mac-fan-system-${VERSION}.tar.gz" > "dist/checksums.txt"
+          python scripts/render_formula.py \
+            --version "${VERSION}" \
+            --sha256 "$(awk '{print $1}' dist/checksums.txt)" \
+            > "dist/mac-fan-system.rb"
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          gh release create "${VERSION}" \
+            --verify-tag \
+            --generate-notes \
+            dist/mac-fan-system-${VERSION}.tar.gz \
+            dist/checksums.txt \
+            dist/mac-fan-system.rb

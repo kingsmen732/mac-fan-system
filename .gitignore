@@ -1,6 +1,5 @@
 .DS_Store
 .pycache/
 .build/
-build/DerivedData/
-MacFanWidgetApp.xcodeproj/
-MacFanWidgetApp.xcodeproj.broken-*/
+build/
+*.egg-info/

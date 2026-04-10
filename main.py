@@ -26,6 +26,7 @@ RETRY_DELAY = 0.03
 ERROR_BUFFER_SIZE = 256
 BUILD_DIR = Path(__file__).resolve().parent / "build"
 NATIVE_LIB_PATH = BUILD_DIR / "libfanbridge.dylib"
+NATIVE_LIB_ENV_VAR = "MAC_FAN_SYSTEM_NATIVE_LIB"
 DEFAULT_WIDGET_EXPORT_PATH = (
     Path.home() / "Library" / "Application Support" / "MacFanSystem" / "fan_rpm.json"
 )
@@ -74,6 +75,15 @@ class NativeFanInfo(ctypes.Structure):
 
 
 def ensure_native_bridge() -> Path:
+    configured_native_lib = os.environ.get(NATIVE_LIB_ENV_VAR)
+    if configured_native_lib:
+        configured_path = Path(configured_native_lib).expanduser().resolve()
+        if configured_path.exists():
+            return configured_path
+        raise NativeFanError(
+            f"{NATIVE_LIB_ENV_VAR} points to a missing native bridge: {configured_path}"
+        )
+
     if NATIVE_LIB_PATH.exists():
         return NATIVE_LIB_PATH
 

@@ -1,106 +1,138 @@
 # mac-fan-system
 
-Native fan RPM monitoring for current Apple Silicon MacBook Pros, with a shipped macOS menu bar app + widget bundle and a separate Python CLI for development diagnostics.
+Python CLI for reading Apple Silicon MacBook Pro fan RPM directly from `AppleSMC`, with an optional experimental manual-control path.
 
 ## What this does
 
-- Reads fan RPM directly from `AppleSMC`
-- Uses the same fan key family `mactop` uses: `FNum`, `F%dAc`, `F%dMn`, `F%dMx`, `F%dTg`, `F%dMd`
-- Does not depend on `mactop`
-- Prints only fan data
-- Can report and change Apple-supported cooling mode when macOS exposes it
-- Includes a generated macOS menu bar app + WidgetKit extension path via XcodeGen and GitHub Actions
-- Ships a bundled background helper inside the macOS app so the release does not need Python at runtime
-- Exposes two built-in UI modes in the shipped app and widget: `Silent` and `Boost`
+- Reads live fan RPM without depending on `mactop`
+- Uses a native Objective-C/C bridge in [`native/fan_bridge.m`](./native/fan_bridge.m) and [`native/smc_bridge.c`](./native/smc_bridge.c)
+- Prints fan RPM in text or JSON
+- Supports watch mode for realtime terminal output
+- Exposes Apple-supported cooling mode checks through `pmset`
+- Keeps the unsupported direct fan-write path explicit and opt-in
 
-The native fan reads happen in:
+## Local build
 
-- [`native/smc_bridge.c`](./native/smc_bridge.c)
-- [`native/fan_bridge.m`](./native/fan_bridge.m)
-
-## Build
+Build the native bridge:
 
 ```bash
 zsh build_native.sh
 ```
 
-This produces:
-
-```text
-build/libfanbridge.dylib
-```
-
-## Shipped app build
-
-Generate and build the installable macOS menu bar app and widget locally:
-
-```bash
-brew install xcodegen
-xcodegen generate
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
-  -project MacFanWidgetApp.xcodeproj \
-  -scheme MacFanWidgetApp \
-  -configuration Release \
-  -destination 'platform=macOS,arch=arm64' \
-  -derivedDataPath build/DerivedData \
-  CODE_SIGNING_ALLOWED=NO \
-  CODE_SIGNING_REQUIRED=NO \
-  build
-```
-
-The shipped product now runs a bundled launch agent inside the app package. The menu bar UI only registers that helper and writes control state, so Python is no longer required after install and the backend can continue after the UI app exits.
-
-## Python dev tools
-
-Print fan RPM once:
+Run once:
 
 ```bash
 python3 main.py
 ```
 
-Print JSON once:
+Run as JSON:
 
 ```bash
 python3 main.py --json
 ```
 
-Watch live fan RPM:
+Run in watch mode:
 
 ```bash
 python3 main.py --watch 1
 ```
 
-Show Apple-supported cooling mode status:
+## Homebrew package
+
+This repo includes a development Brew formula at [`Formula/mac-fan-system.rb`](./Formula/mac-fan-system.rb).
+
+Install from the local checkout:
 
 ```bash
-python3 main.py --cooling-status
+brew install --HEAD ./Formula/mac-fan-system.rb
 ```
 
-Enable the safest supported "more cooling" mode:
+For public users, the clean setup is:
+
+1. Keep this repository as the source repository.
+2. Create a separate Homebrew tap repository named `homebrew-mac-fan-system` or `homebrew-tap`.
+3. Publish tagged releases from this source repo.
+4. Put the generated stable formula for each tag into the tap repo.
+
+The public formula should point at a tagged GitHub release tarball, not `--HEAD`.
+
+This source repo now includes:
+
+- CI at [ci.yml](./.github/workflows/ci.yml)
+- a tag release workflow at [release.yml](./.github/workflows/release.yml)
+- a formula renderer at [render_formula.py](./scripts/render_formula.py)
+
+When you push a tag like `v0.1.0`, the release workflow uploads:
+
+- `mac-fan-system-v0.1.0.tar.gz`
+- `checksums.txt`
+- `mac-fan-system.rb`
+
+That generated `mac-fan-system.rb` is the file you copy into your public tap repo.
+
+After the tap repo is live, public install becomes:
 
 ```bash
-sudo python3 main.py --set-supported-cooling high
+brew tap kingsmen732/mac-fan-system
+brew install mac-fan-system
 ```
 
-Return to normal automatic behavior:
+## CLI usage
+
+Read fan RPM:
 
 ```bash
-sudo python3 main.py --set-supported-cooling normal
+mac-fan-system
+```
+
+Read JSON:
+
+```bash
+mac-fan-system --json
+```
+
+Watch continuously:
+
+```bash
+mac-fan-system --watch 1
+```
+
+Show Apple-supported cooling status:
+
+```bash
+mac-fan-system --cooling-status
+```
+
+Use Apple-supported higher cooling mode when available:
+
+```bash
+sudo mac-fan-system --set-supported-cooling high
+```
+
+Return to Apple’s normal supported mode:
+
+```bash
+sudo mac-fan-system --set-supported-cooling normal
 ```
 
 Experimental direct fan max mode:
 
 ```bash
-sudo python3 main.py --unsafe-force-fans-high --i-understand-this-is-unsupported
+sudo mac-fan-system --unsafe-force-fans-high --i-understand-this-is-unsupported
 ```
 
 Restore automatic fan control:
 
 ```bash
-sudo python3 main.py --unsafe-restore-auto --i-understand-this-is-unsupported
+sudo mac-fan-system --unsafe-restore-auto --i-understand-this-is-unsupported
 ```
 
 ## Example output
+
+```text
+fan0: 2326 rpm (auto, 2317-7826)
+fan1: 2500 rpm (auto, 2317-7826)
+```
 
 ```json
 {
@@ -127,10 +159,8 @@ sudo python3 main.py --unsafe-restore-auto --i-understand-this-is-unsupported
 
 ## Notes
 
-- `main.py` keeps the native bridge open during `--watch` mode so reads stay stable.
-- The bridge tries the broader `IOReport` setup as a best-effort warm-up, but live fan RPM comes from direct SMC keys.
-- Directly forcing fan RPM to max is not exposed by Apple as a supported macOS interface. The safe path in this project is `High Power Mode` when the Mac advertises `highpowermode` support through `pmset`.
-- The `--unsafe-force-fans-high` and `--unsafe-restore-auto` commands use undocumented AppleSMC writes. They are intentionally opt-in, require `sudo`, and should be treated as experimental.
-- The shipped app tries to use an App Group-style shared container when available and falls back to the standard user Application Support path for direct downloadable builds that are not provisioned with App Group entitlements.
-- The shipped UI is intentionally minimal: no manual refresh, no layout toggle, and no visible file-path plumbing.
-- If you test from a restricted environment, `AppleSMC` access may fail even though the same code works fine in your normal Terminal session.
+- The CLI first checks `MAC_FAN_SYSTEM_NATIVE_LIB`; Brew uses that to point at the installed dylib.
+- If that variable is unset, the CLI falls back to the local `build/libfanbridge.dylib`.
+- Direct max-fan writes are undocumented AppleSMC writes and should be treated as experimental.
+- On restricted environments, `AppleSMC` access may fail even if the same code works in a normal Terminal session.
+- The clean public Homebrew path is a separate tap repo plus tagged releases from this source repo.

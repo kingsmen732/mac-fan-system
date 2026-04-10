@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run unit tests
+        env:
+          PYTHONPYCACHEPREFIX: ${{ github.workspace }}/.pycache
+        run: python -m unittest discover -s tests -q
+
+      - name: Build native bridge
+        run: zsh build_native.sh
+
+      - name: Check formula syntax
+        run: ruby -c Formula/mac-fan-system.rb
